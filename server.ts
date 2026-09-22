@@ -6,7 +6,7 @@ import { createServer as createViteServer } from 'vite';
 
 dotenv.config({ path: '.env.local' });
 
-const app = express();
+export const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 
 app.use(express.json({ limit: '10mb' }));
@@ -704,4 +704,6 @@ async function startServer() {
   });
 }
 
-startServer();
+if (!process.env.VERCEL) {
+  startServer();
+}
