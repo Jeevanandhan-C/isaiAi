@@ -8,6 +8,8 @@ interface SynthesisParams {
   durationSec?: number;
   sections?: LyricSection[];
   title?: string;
+  lyrics?: string;
+  language?: string;
 }
 
 // Note frequencies in Hz
@@ -57,12 +59,16 @@ export async function generateSongAudio(params: SynthesisParams): Promise<{ audi
 
   // Master Gain & Limiter
   const masterGain = ctx.createGain();
-  masterGain.gain.setValueAtTime(0.85, 0);
+  masterGain.gain.setValueAtTime(0.72, 0);
 
   // Soft fade out at end
-  masterGain.gain.setValueAtTime(0.85, duration - 2.5);
+  masterGain.gain.setValueAtTime(0.72, duration - 2.5);
   masterGain.gain.linearRampToValueAtTime(0.001, duration);
   masterGain.connect(ctx.destination);
+
+  const vocalBus = ctx.createGain();
+  vocalBus.gain.setValueAtTime(0.8, 0);
+  vocalBus.connect(masterGain);
 
   // Reverb simulation bus (convolver / stereo delay)
   const reverbGain = ctx.createGain();
@@ -126,6 +132,14 @@ export async function generateSongAudio(params: SynthesisParams): Promise<{ audi
     totalBeats,
     scale,
     duration,
+  });
+
+  // 5. Vocal layer: sing the actual lyrics with a voice-like synth timbre so the result is not karaoke-only.
+  renderVocalLayer(ctx, vocalBus, {
+    lyrics: params.lyrics || '',
+    beatSec,
+    duration,
+    scale,
   });
 
   // Render audio offline
@@ -388,6 +402,102 @@ function renderMelodyLayer(
       }
     }
   }
+}
+
+function renderVocalLayer(
+  ctx: OfflineAudioContext,
+  dest: AudioNode,
+  opts: { lyrics: string; beatSec: number; duration: number; scale: number[] }
+) {
+  const { lyrics, beatSec, duration, scale } = opts;
+  if (!lyrics || !lyrics.trim()) return;
+
+  const words = lyrics
+    .replace(/[\n\r]+/g, ' ')
+    .replace(/[_*#•]/g, ' ')
+    .split(/\s+/)
+    .map((word) => word.replace(/[^A-Za-z0-9\u0B80-\u0BFF]/g, ''))
+    .filter(Boolean);
+
+  if (words.length === 0) return;
+
+  const syllableStep = Math.max(0.38, beatSec * 0.75);
+  let timeCursor = 0;
+
+  for (let i = 0; i < words.length && timeCursor < duration - 0.35; i++) {
+    const word = words[i];
+    const noteIndex = (i * 2) % scale.length;
+    const baseFreq = scale[noteIndex] * (1 + ((i % 3) * 0.09));
+    const syllables = Math.max(1, Math.min(3, Math.ceil(word.length / 2)));
+
+    for (let s = 0; s < syllables; s++) {
+      const syllableTime = timeCursor + s * syllableStep * 0.55;
+      if (syllableTime >= duration - 0.2) break;
+      const freq = baseFreq * (1 + (s % 2) * 0.06 + (i % 5) * 0.02);
+      const dur = Math.min(0.48, beatSec * 0.9 + (s * 0.08));
+      playVocalSyllable(ctx, dest, syllableTime, freq, dur);
+    }
+
+    timeCursor += beatSec * (i % 2 === 0 ? 0.8 : 1.0);
+  }
+}
+
+function playVocalSyllable(
+  ctx: OfflineAudioContext,
+  dest: AudioNode,
+  time: number,
+  freq: number,
+  dur: number
+) {
+  const bodyOsc = ctx.createOscillator();
+  const overtoneOsc = ctx.createOscillator();
+  const formantOsc = ctx.createOscillator();
+  const filter = ctx.createBiquadFilter();
+  const gain = ctx.createGain();
+
+  const vibrato = ctx.createOscillator();
+  const vibratoGain = ctx.createGain();
+
+  bodyOsc.type = 'triangle';
+  bodyOsc.frequency.setValueAtTime(freq, time);
+
+  overtoneOsc.type = 'sine';
+  overtoneOsc.frequency.setValueAtTime(freq * 2.0, time);
+
+  formantOsc.type = 'sine';
+  formantOsc.frequency.setValueAtTime(freq * 3.0, time);
+
+  filter.type = 'bandpass';
+  filter.frequency.setValueAtTime(freq * 1.4, time);
+  filter.Q.setValueAtTime(3.0, time);
+
+  vibrato.frequency.setValueAtTime(5.2, time);
+  vibratoGain.gain.setValueAtTime(freq * 0.019, time);
+  vibrato.connect(vibratoGain);
+  vibratoGain.connect(bodyOsc.frequency);
+  vibratoGain.connect(overtoneOsc.frequency);
+  vibratoGain.connect(formantOsc.frequency);
+
+  gain.gain.setValueAtTime(0.001, time);
+  gain.gain.linearRampToValueAtTime(0.35, time + 0.04);
+  gain.gain.linearRampToValueAtTime(0.26, time + dur * 0.7);
+  gain.gain.exponentialRampToValueAtTime(0.001, time + dur);
+
+  bodyOsc.connect(filter);
+  overtoneOsc.connect(filter);
+  formantOsc.connect(filter);
+  filter.connect(gain);
+  gain.connect(dest);
+
+  bodyOsc.start(time);
+  overtoneOsc.start(time);
+  formantOsc.start(time);
+  vibrato.start(time);
+
+  bodyOsc.stop(time + dur);
+  overtoneOsc.stop(time + dur);
+  formantOsc.stop(time + dur);
+  vibrato.stop(time + dur);
 }
 
 // ==========================================
@@ -1054,6 +1164,8 @@ export async function generateLyriaOrSynthesizedAudio(params: GenerateAudioReque
     scale: params.scale,
     durationSec: params.trackLength === 'full' ? 60 : 32,
     title: params.title,
+    lyrics: params.lyrics || params.text || '',
+    language: params.language,
   });
 
   return {

@@ -1,7 +1,10 @@
 import express from 'express';
 import path from 'path';
+import dotenv from 'dotenv';
 import { GoogleGenAI, Type } from '@google/genai';
 import { createServer as createViteServer } from 'vite';
+
+dotenv.config({ path: '.env.local' });
 
 const app = express();
 const PORT = 3000;
@@ -28,6 +31,84 @@ function getGeminiClient() {
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', name: 'IsaiAI' });
 });
+
+function getElevenLabsConfig() {
+  const apiKey = process.env.ELEVENLABS_API_KEY;
+  const voiceId = process.env.ELEVENLABS_VOICE_ID || 'pNInz6obpgDQGcFmaJgB';
+
+  if (!apiKey) {
+    return null;
+  }
+
+  return { apiKey, voiceId };
+}
+
+function buildVoiceText(lyrics: string, title?: string, mood?: string, language?: string) {
+  const cleanLyrics = (lyrics || '')
+    .replace(/\r/g, '\n')
+    .replace(/\*\*|[#•]/g, '')
+    .replace(/\n{2,}/g, '\n')
+    .trim();
+
+  if (!cleanLyrics) {
+    return `${title || 'Song'} in ${language || 'Tamil'} style with warm emotional singing.`;
+  }
+
+  const lines = cleanLyrics
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(0, 10);
+
+  const compactText = lines.join(' ');
+  const sungText = compactText.length > 1000 ? `${compactText.slice(0, 1000)}...` : compactText;
+
+  return `${title ? `${title}. ` : ''}${mood ? `${mood}. ` : ''}Sing this with expressive emotional phrasing: ${sungText}`;
+}
+
+async function tryGenerateElevenLabsVoice({ lyrics, title, mood, language }: { lyrics?: string; title?: string; mood?: string; language?: string; }): Promise<{ audioBase64: string; mimeType: string; durationSec: number } | null> {
+  const config = getElevenLabsConfig();
+  if (!config) {
+    return null;
+  }
+
+  try {
+    const voiceText = buildVoiceText(lyrics || '', title, mood, language);
+    const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${config.voiceId}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'xi-api-key': config.apiKey,
+      },
+      body: JSON.stringify({
+        text: voiceText,
+        model_id: 'eleven_multilingual_v2',
+        voice_settings: {
+          stability: 0.5,
+          similarity_boost: 0.8,
+          style: 0.7,
+          use_speaker_boost: true,
+        },
+      }),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.warn('ElevenLabs voice generation failed:', response.status, errorText);
+      return null;
+    }
+
+    const audioBuffer = Buffer.from(await response.arrayBuffer());
+    return {
+      audioBase64: audioBuffer.toString('base64'),
+      mimeType: response.headers.get('content-type') || 'audio/mpeg',
+      durationSec: Math.max(20, Math.min(180, Math.ceil((lyrics || '').split(/\s+/).length * 0.55))),
+    };
+  } catch (err: any) {
+    console.warn('ElevenLabs voice generation unavailable, falling back to synth path:', err?.message || err);
+    return null;
+  }
+}
 
 /**
  * Generate structured lyrics strictly based on the user's isolated idea,
@@ -291,6 +372,23 @@ app.post('/api/generate-music', async (req, res) => {
         ? 'Full-length track with authentic musical intro, verse, catchy chorus hook, and melodic outro.'
         : 'Punchy 30-second music clip featuring main catchy melodic hook and rhythm groove.',
     ].filter(Boolean).join(' ');
+
+    const voiceResult = await tryGenerateElevenLabsVoice({
+      lyrics,
+      title,
+      mood,
+      language,
+    });
+
+    if (voiceResult) {
+      return res.json({
+        success: true,
+        audioBase64: voiceResult.audioBase64,
+        mimeType: voiceResult.mimeType,
+        modelUsed: 'elevenlabs-tts',
+        durationSec: voiceResult.durationSec,
+      });
+    }
 
     const ai = getGeminiClient();
     if (!ai) {

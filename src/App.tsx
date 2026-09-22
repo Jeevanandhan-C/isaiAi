@@ -419,6 +419,8 @@ const INITIAL_DEMO_SONG: GeneratedSong = {
           scale: lyricsData.scale,
           durationSec: trackLength === 'full' ? 60 : 32,
           title: lyricsData.title,
+          lyrics: lyricsData.fullLyrics,
+          language: selectedLanguage,
         });
         audioResult = {
           audioUrl: synthFallback.audioUrl,
