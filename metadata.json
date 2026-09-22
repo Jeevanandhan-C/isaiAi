@@ -1,0 +1,6 @@
+{
+  "name": "IsaiAI",
+  "description": "AI-powered text and lyrics to song generator supporting Tamil melodies, Kuthu, Gaana, 80s & 90s retro, Carnatic, rap, and multilingual fusion with downloadable MP3 audio.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
